@@ -12,7 +12,7 @@ from safetensors.torch import load_file
 from tensordict import TensorDict
 
 from .camera import decode_camera
-from .conditioning import ImageEncoder, require_encoder_access
+from .conditioning import ImageEncoder, hub_repos, require_encoder_access
 from .gaussian import Gaussian
 from .models import BiRefNet, GaussianFixedlenDecoder, LatentSeqMMFlowModel, OctreeProbabilityFixedlenDecoder
 from .models import layers
@@ -45,17 +45,30 @@ def compile_for_sampling(denoiser):
             module.forward = types.MethodType(compiled[type(module)], module)
 
 
+def encoder_sources(config: dict, overrides: Optional[dict]) -> dict:
+    """config.json's image encoders with `overrides` (by name) in their place."""
+    unknown = set(overrides or {}) - set(config['image_encoders'])
+    if unknown:
+        raise ValueError(f'image_encoders: unknown encoder {sorted(unknown)}; '
+                         f'expected {sorted(config["image_encoders"])}')
+    return {**config['image_encoders'], **(overrides or {})}
+
+
 class IdolPipeline:
     """optimize (default on, CUDA only): ~1.7x faster sampling at the same output quality: compiled denoiser
     (torch.compile), conditional and unconditional passes batched together, cuDNN attention and TF32 matmuls while
-    sampling. The first generation in a process compiles first. optimize=False runs everything eagerly."""
+    sampling. The first generation in a process compiles first. optimize=False runs everything eagerly.
+
+    image_encoders overrides where the image encoders come from, by name ('dinov3', 'flux2_vae'; default: the repos
+    in config.json): a Hub repo id, a local directory, or an already-loaded model with the same weights. Only Hub repo
+    ids are checked for gated access."""
     def __init__(self, weights_dir: str, device: Optional[str] = None, dinov3_dtype: str = 'bf16',
-                 optimize: bool = True):
+                 optimize: bool = True, image_encoders: Optional[dict] = None):
         self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
         with open(os.path.join(weights_dir, 'config.json')) as f:
             self.config = json.load(f)
-        encoders = self.config['image_encoders']
-        require_encoder_access([encoders['dinov3'], encoders['flux2_vae']])
+        encoders = encoder_sources(self.config, image_encoders)
+        require_encoder_access(hub_repos([encoders['dinov3'], encoders['flux2_vae']]))
 
         def load(model, name):
             model.load_state_dict(load_file(os.path.join(weights_dir, f'{name}.safetensors')), strict=True)
@@ -80,8 +93,8 @@ class IdolPipeline:
         from huggingface_hub import hf_hub_download, snapshot_download
         # check the gated image encoders before downloading the ~3 GB of weights
         with open(hf_hub_download(repo_or_dir, 'config.json')) as f:
-            encoders = json.load(f)['image_encoders']
-        require_encoder_access([encoders['dinov3'], encoders['flux2_vae']])
+            encoders = encoder_sources(json.load(f), kwargs.get('image_encoders'))
+        require_encoder_access(hub_repos([encoders['dinov3'], encoders['flux2_vae']]))
         return cls(snapshot_download(repo_or_dir, allow_patterns=WEIGHT_FILES), **kwargs)
 
     def preprocess(self, image: Union[str, Image.Image], mode: str = 'synthetic',

@@ -49,18 +49,29 @@ def require_encoder_access(repos):
                              f'{pages}\n{steps}')
 
 
+def hub_repos(sources):
+    """The encoder sources that would be downloaded from the Hub: strings that are not local directories."""
+    import os
+
+    return [s for s in sources if isinstance(s, str) and not os.path.isdir(s)]
+
+
 class ImageEncoder:
-    def __init__(self, dinov3_repo: str, flux2_vae_repo: str,
-                 dinov3_dtype: str = 'bf16', device: str = 'cuda'):
+    """dinov3 and flux2_vae are each a Hub repo id, a local directory in the same layout (the FLUX.2 one with its
+    autoencoder under vae/), or an already-loaded model (a transformers DINOv3 model, an AutoencoderKLFlux2), used in the dtype it was loaded in
+    (load it as from_pretrained would: DINOv3 in dinov3_dtype, the autoencoder in bf16; a blanket cast would also cast
+    the buffers transformers keeps in fp32, such as the RoPE frequencies)."""
+    def __init__(self, dinov3, flux2_vae, dinov3_dtype: str = 'bf16', device: str = 'cuda'):
         from diffusers.models import AutoencoderKLFlux2
         from transformers import AutoModel
 
         self.device = torch.device(device)
-        self.dinov3 = AutoModel.from_pretrained(dinov3_repo, torch_dtype=DTYPES[dinov3_dtype])
-        self.dinov3 = self.dinov3.eval().requires_grad_(False).to(self.device)
-        self.flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae_repo, subfolder='vae',
-                                                            torch_dtype=torch.bfloat16)
-        self.flux2_vae = self.flux2_vae.eval().requires_grad_(False).to(self.device)
+        if isinstance(dinov3, str):
+            dinov3 = AutoModel.from_pretrained(dinov3, torch_dtype=DTYPES[dinov3_dtype])
+        self.dinov3 = dinov3.eval().requires_grad_(False).to(self.device)
+        if isinstance(flux2_vae, str):
+            flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae, subfolder='vae', torch_dtype=torch.bfloat16)
+        self.flux2_vae = flux2_vae.eval().requires_grad_(False).to(self.device)
 
     def _dinov3_tokens(self, images):
         mean = torch.tensor(IMAGENET_MEAN, device=images.device).view(1, 3, 1, 1)

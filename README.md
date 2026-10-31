@@ -89,6 +89,18 @@ output.gaussian.save_ply("photo.ply")
 output.preprocessed_image.save("photo_input.png")
 ```
 
+The image encoders come from the Hugging Face repos named in the weights' `config.json`. `image_encoders` takes them
+from somewhere else, by name: another repo id, a local folder in the same layout (FLUX.2's with its autoencoder under
+`vae/`), or a model you have already loaded. Only repo ids are checked for gated access, so local copies load offline
+without a token:
+
+```python
+pipeline = IdolPipeline.from_pretrained("speridlabs/idol", image_encoders={
+    "dinov3": "/models/dinov3-vith16plus-pretrain-lvd1689m",  # or a loaded transformers DINOv3 model
+    "flux2_vae": "/models/FLUX.2-klein-4B",                   # any FLUX.2 repo with the same autoencoder in vae/
+})
+```
+
 ### Demo
 
 The Gradio app behind the [Hugging Face Space](https://huggingface.co/spaces/speridlabs/idol) is in `demo/`,
