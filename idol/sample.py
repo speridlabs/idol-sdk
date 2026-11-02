@@ -24,6 +24,9 @@ def main():
     parser.add_argument('--num_gaussians', type=int, default=262144,
                         help='32,768 to 1,048,576, a multiple of 32')
     parser.add_argument('--weights', default='speridlabs/idol', help='Hugging Face repo or local folder')
+    parser.add_argument('--device', default=None, choices=['cuda', 'mps', 'cpu'],
+                        help='CUDA, Apple Silicon MPS or CPU; default: the best available '
+                             '(override with IDOL_DEVICE)')
     parser.add_argument('--dinov3_dtype', choices=['bf16', 'fp32'], default='bf16')
     parser.add_argument('--no_optimize', dest='optimize', action='store_false',
                         help='turn off the faster sampling (torch.compile, batched guidance, cuDNN attention, TF32) '
@@ -38,7 +41,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     try:
-        pipeline = IdolPipeline.from_pretrained(args.weights, dinov3_dtype=args.dinov3_dtype, optimize=args.optimize)
+        pipeline = IdolPipeline.from_pretrained(args.weights, device=args.device, dinov3_dtype=args.dinov3_dtype,
+                                                optimize=args.optimize)
     except EncoderAccessError as error:
         raise SystemExit(f'error: {error}')
     for path in images:

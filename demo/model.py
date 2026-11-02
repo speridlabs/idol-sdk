@@ -9,9 +9,12 @@ GAUSSIANS = {'65,536': 65536, '131,072': 131072, '262,144': 262144, '524,288': 5
 DEFAULTS = {'steps': 50, 'cfg': 3.0, 'rescale_t': 3.0, 'gaussians': '262,144', 'seed': 42}
 
 # Weights load once at import; on ZeroGPU the CUDA placement is deferred to the GPU worker.
+# Locally, device=None picks CUDA, then Apple Silicon MPS, then CPU (IDOL_DEVICE overrides it).
 # ZeroGPU does not support torch.compile, so the Space samples without the optimized path.
-pipeline = IdolPipeline.from_pretrained(os.environ.get('IDOL_WEIGHTS', 'speridlabs/idol'), device='cuda',
-                                        optimize=not os.environ.get('SPACES_ZERO_GPU'))
+pipeline = IdolPipeline.from_pretrained(
+    os.environ.get('IDOL_WEIGHTS', 'speridlabs/idol'),
+    device='cuda' if os.environ.get('SPACES_ZERO_GPU') else os.environ.get('IDOL_DEVICE'),
+    optimize=not os.environ.get('SPACES_ZERO_GPU'))
 OUTPUT_DIR = tempfile.mkdtemp(prefix='idol-')
 
 

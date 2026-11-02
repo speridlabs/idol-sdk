@@ -13,6 +13,7 @@ from tensordict import TensorDict
 
 from .camera import decode_camera
 from .conditioning import ImageEncoder, require_encoder_access
+from .device import resolve_device
 from .gaussian import Gaussian
 from .models import BiRefNet, GaussianFixedlenDecoder, LatentSeqMMFlowModel, OctreeProbabilityFixedlenDecoder
 from .models import layers
@@ -51,7 +52,7 @@ class IdolPipeline:
     sampling. The first generation in a process compiles first. optimize=False runs everything eagerly."""
     def __init__(self, weights_dir: str, device: Optional[str] = None, dinov3_dtype: str = 'bf16',
                  optimize: bool = True):
-        self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+        self.device = resolve_device(device)
         with open(os.path.join(weights_dir, 'config.json')) as f:
             self.config = json.load(f)
         encoders = self.config['image_encoders']
