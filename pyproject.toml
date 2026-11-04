@@ -10,6 +10,7 @@ dependencies = [
     "torchvision>=0.20",
     "transformers>=4.56",
     "diffusers>=0.36",
+    "accelerate>=1.0",
     "huggingface_hub>=0.34",
     "safetensors>=0.4",
     "tensordict>=0.8",

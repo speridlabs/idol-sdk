@@ -52,14 +52,20 @@ def require_encoder_access(repos):
 class ImageEncoder:
     def __init__(self, dinov3_repo: str, flux2_vae_repo: str,
                  dinov3_dtype: str = 'bf16', device: str = 'cuda'):
+        import logging
+        import warnings
+
         from diffusers.models import AutoencoderKLFlux2
         from transformers import AutoModel
 
+        warnings.filterwarnings('ignore', message=r'.*local_dir_use_symlinks.*', category=UserWarning)
+        logging.getLogger('diffusers.configuration_utils').setLevel(logging.ERROR)
+
         self.device = torch.device(device)
-        self.dinov3 = AutoModel.from_pretrained(dinov3_repo, torch_dtype=DTYPES[dinov3_dtype])
+        self.dinov3 = AutoModel.from_pretrained(dinov3_repo, dtype=DTYPES[dinov3_dtype])
         self.dinov3 = self.dinov3.eval().requires_grad_(False).to(self.device)
         self.flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae_repo, subfolder='vae',
-                                                            torch_dtype=torch.bfloat16)
+                                                            dtype=torch.bfloat16)
         self.flux2_vae = self.flux2_vae.eval().requires_grad_(False).to(self.device)
 
     def _dinov3_tokens(self, images):
