@@ -171,6 +171,9 @@ the default is roughly 60× slower than an A100. Use 10–20 steps for interacti
 `torch.compile`, Core ML/ANE and MLX were each measured on MPS and none improve on this path. Peak memory
 during decode is ~16 GB, so 262,144 Gaussians needs a 24 GB or larger machine.
 
+BiRefNet also runs in fp16 on MPS, as on CUDA: ~5.8 s versus ~7.3 s in fp32 for a 1024² image, with a
+mask IoU of 0.9999 against the fp32 result.
+
 ## Acknowledgements
 
 Idol builds on [TripoSplat](https://github.com/VAST-AI-Research/TripoSplat). It uses

@@ -66,7 +66,7 @@ class IdolPipeline:
         self.decoder = load(OctreeProbabilityFixedlenDecoder(**self.config['decoder']['args']), 'decoder')
         self.decoder_gs = load(GaussianFixedlenDecoder(**self.config['decoder_gs']['args']), 'decoder_gs')
         self.background_remover = load(BiRefNet(), 'birefnet')
-        if self.device.type == 'cuda':
+        if self.device.type in ('cuda', 'mps'):
             self.background_remover.half()
         self.image_encoder = ImageEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype=dinov3_dtype,
                                           device=self.device)
