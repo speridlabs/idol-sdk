@@ -89,6 +89,11 @@ output.gaussian.save_ply("photo.ply")
 output.preprocessed_image.save("photo_input.png")
 ```
 
+For explicit post-generation edits, `output.gaussian.transformed(linear, translation, mask=...)`
+returns a new Gaussian object with both positions and anisotropic covariances transformed.
+See [affine edits and known-plane shear correction](docs/affine-edits.md). This is opt-in
+postprocessing; it does not change inference or automatically enforce object geometry.
+
 ### Demo
 
 The Gradio app behind the [Hugging Face Space](https://huggingface.co/spaces/speridlabs/idol) is in `demo/`,
