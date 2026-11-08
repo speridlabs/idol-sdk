@@ -2,6 +2,8 @@ import argparse
 import json
 import os
 
+import torch
+
 from .conditioning import EncoderAccessError
 from .pipeline import IdolPipeline
 
@@ -24,10 +26,13 @@ def main():
     parser.add_argument('--num_gaussians', type=int, default=262144,
                         help='32,768 to 1,048,576, a multiple of 32')
     parser.add_argument('--weights', default='speridlabs/idol', help='Hugging Face repo or local folder')
+    parser.add_argument('--device', default='cuda',
+                        help="'cuda' (default), 'rocm' (or 'amd') for AMD GPUs, 'cpu', or any torch device string "
+                             "(e.g. 'cuda:1')")
     parser.add_argument('--dinov3_dtype', choices=['bf16', 'fp32'], default='bf16')
     parser.add_argument('--no_optimize', dest='optimize', action='store_false',
-                        help='turn off the faster sampling (torch.compile, batched guidance, cuDNN attention, TF32) '
-                             'that is on by default on GPU')
+                        help='turn off the faster sampling (torch.compile, batched guidance, fused attention, '
+                             'TF32) that is on by default on GPU')
     args = parser.parse_args()
 
     if os.path.isdir(args.image):
@@ -38,9 +43,14 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     try:
-        pipeline = IdolPipeline.from_pretrained(args.weights, dinov3_dtype=args.dinov3_dtype, optimize=args.optimize)
+        pipeline = IdolPipeline.from_pretrained(args.weights, dinov3_dtype=args.dinov3_dtype, optimize=args.optimize,
+                                                device=args.device)
     except EncoderAccessError as error:
         raise SystemExit(f'error: {error}')
+    if pipeline.device.type == 'cuda':
+        print(f'running on {torch.cuda.get_device_name(pipeline.device)} ({pipeline.device})')
+    else:
+        print('running on the CPU (very slow)')
     for path in images:
         name = os.path.splitext(os.path.basename(path))[0]
         output = pipeline(path, mode=args.mode, crop_margin=args.crop_margin, seed=args.seed, steps=args.steps,

@@ -25,6 +25,39 @@ WEIGHT_FILES = ['config.json', 'denoiser.safetensors', 'decoder.safetensors', 'd
                 'birefnet.safetensors']
 
 
+def resolve_device(device: Optional[str]) -> torch.device:
+    """'cuda' (default), 'rocm' (or 'amd') to explicitly select and verify an AMD GPU, 'cpu', or any torch device
+    string such as 'cuda:1'. AMD GPUs are addressed through the 'cuda' device by a ROCM build of PyTorch, so
+    'rocm' verifies that stack rather than naming a different torch device type.
+
+    Stops with an explanation when the requested GPU cannot be used: sampling Idol on the CPU takes hours, so a
+    silent CPU fallback would be indistinguishable from a broken setup."""
+    if not device:
+        device = 'cuda'
+    if device in ('rocm', 'amd'):
+        if torch.version.hip is None:
+            raise RuntimeError(
+                'device is "rocm" but this torch is not built for ROCm, so it cannot use AMD GPUs. Install the '
+                'ROCm build of PyTorch (see https://pytorch.org), e.g. `pip install torch torchvision --index-url '
+                'https://download.pytorch.org/whl/rocm6.4`, then rerun. Verify with `python -c "import torch; '
+                'print(torch.version.hip, torch.cuda.is_available())"`.')
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                'This PyTorch is built for ROCm but cannot see an AMD GPU. Check that `rocm-smi` lists the GPU, '
+                'and that this user can access it (on Linux, add the user to the `render` and `video` groups, '
+                'then log out and back in). Pass --device cpu to run on the CPU regardless (much slower).')
+        return torch.device('cuda')
+    device = torch.device(device)
+    if device.type == 'cuda' and not torch.cuda.is_available():
+        hint = ('If this is an AMD GPU machine, install the ROCm build of PyTorch (see the ROCm section of the '
+                'README) and pass --device rocm.')
+        if os.path.exists('/dev/kfd'):
+            hint = (f'An AMD GPU is present, but this torch ({torch.__version__}) was not built for ROCm, so it '
+                    'cannot use it. ' + hint)
+        raise RuntimeError(f'torch cannot use {device}: torch.cuda.is_available() is False. {hint}')
+    return device
+
+
 @dataclass
 class IdolOutput:
     gaussian: Gaussian               # the object; .save_ply(path) writes a standard 3DGS PLY
@@ -46,12 +79,15 @@ def compile_for_sampling(denoiser):
 
 
 class IdolPipeline:
-    """optimize (default on, CUDA only): ~1.7x faster sampling at the same output quality: compiled denoiser
-    (torch.compile), conditional and unconditional passes batched together, cuDNN attention and TF32 matmuls while
-    sampling. The first generation in a process compiles first. optimize=False runs everything eagerly."""
+    """optimize (default on, GPU only): ~1.7x faster sampling at the same output quality: compiled denoiser
+    (torch.compile), conditional and unconditional passes batched together, fused attention (cuDNN on NVIDIA
+    GPUs, the default flash-attention dispatcher on AMD GPUs) and TF32 matmuls while sampling. The first
+    generation in a process compiles first. optimize=False runs everything eagerly."""
     def __init__(self, weights_dir: str, device: Optional[str] = None, dinov3_dtype: str = 'bf16',
                  optimize: bool = True):
-        self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+        """device: 'cuda' (default), 'rocm' or 'amd' for AMD GPUs, 'cpu', or any torch device string ('cuda:1');
+        see resolve_device."""
+        self.device = resolve_device(device)
         with open(os.path.join(weights_dir, 'config.json')) as f:
             self.config = json.load(f)
         encoders = self.config['image_encoders']
@@ -129,12 +165,13 @@ class IdolPipeline:
 
     @contextmanager
     def _sampling_settings(self):
-        """optimize=True: cuDNN attention and TF32 matmuls for the denoiser only (cuDNN is slower in the decoders)."""
+        """optimize=True: fused attention (cuDNN on NVIDIA GPUs; on ROCm plain SDPA, which selects the fused
+        AOTriton flash-attention kernel) and TF32 matmuls for the denoiser only (faster than in the decoders)."""
         if not self.optimize:
             yield
             return
         backend, tf32 = layers.ATTN_BACKEND, torch.backends.cuda.matmul.allow_tf32
-        layers.ATTN_BACKEND = 'sdpa_cudnn'
+        layers.ATTN_BACKEND = layers.FAST_SDPA_BACKEND
         torch.backends.cuda.matmul.allow_tf32 = True
         try:
             yield

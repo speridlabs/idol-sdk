@@ -8,15 +8,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-# flash-attn when it is installed, PyTorch SDPA otherwise (same result, flash-attn is faster).
+# True when PyTorch is built for AMD GPUs (ROCm/HIP), where the CUDA-only flash-attn package and the cuDNN
+# attention kernel are unavailable.
+IS_ROCM = getattr(torch.version, 'hip', None) is not None
+
+# flash-attn when it is installed, PyTorch SDPA otherwise (same result, flash-attn is faster). flash-attn is
+# CUDA-only, so on ROCm SDPA is used (the dispatcher selects the fused AOTriton flash-attention kernel).
 # Override with ATTN_BACKEND=flash_attn|sdpa|sdpa_cudnn (sdpa_cudnn: PyTorch SDPA restricted to the cuDNN kernel,
-# which IdolPipeline(optimize=True) selects for the denoiser while sampling).
-ATTN_BACKEND = os.environ.get('ATTN_BACKEND',
-                              'flash_attn' if importlib.util.find_spec('flash_attn') is not None else 'sdpa')
+# which IdolPipeline(optimize=True) selects for the denoiser while sampling; see FAST_SDPA_BACKEND).
+ATTN_BACKEND = os.environ.get(
+    'ATTN_BACKEND',
+    'flash_attn' if not IS_ROCM and importlib.util.find_spec('flash_attn') is not None else 'sdpa')
 if ATTN_BACKEND not in ('flash_attn', 'sdpa', 'sdpa_cudnn'):
     raise ValueError(f'Unknown attention backend: {ATTN_BACKEND}')
 if ATTN_BACKEND == 'flash_attn':
     import flash_attn
+
+# The fastest restricted SDPA for the optimized sampling path (IdolPipeline._sampling_settings): the cuDNN
+# kernel on NVIDIA GPUs. On ROCm no restriction is needed: plain SDPA already selects the fused AOTriton
+# flash-attention kernel for half-precision inputs, and restricting to CUDNN_ATTENTION would fail.
+FAST_SDPA_BACKEND = 'sdpa' if IS_ROCM else 'sdpa_cudnn'
 
 
 def scaled_dot_product_attention(*args) -> torch.Tensor:
@@ -27,7 +38,7 @@ def scaled_dot_product_attention(*args) -> torch.Tensor:
         return flash_attn.flash_attn_func(*args)
     q, k, v = args[0].unbind(dim=2) if len(args) == 1 else args
     q, k, v = q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)
-    if ATTN_BACKEND == 'sdpa_cudnn':
+    if ATTN_BACKEND == 'sdpa_cudnn' and not IS_ROCM:
         with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
             out = F.scaled_dot_product_attention(q, k, v)
     else:

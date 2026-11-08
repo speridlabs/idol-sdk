@@ -43,7 +43,25 @@ and [black-forest-labs/FLUX.2-dev](https://huggingface.co/black-forest-labs/FLUX
 `hf auth login`. 
 
 `flash-attn`, if installed, is used for attention; otherwise PyTorch's `scaled_dot_product_attention` is (same
-result, slower). Set `ATTN_BACKEND=sdpa` or `ATTN_BACKEND=flash_attn` to choose.
+result, slower). Set `ATTN_BACKEND=sdpa` or `ATTN_BACKEND=flash_attn` to choose. On AMD GPUs (ROCm), PyTorch's
+`scaled_dot_product_attention` is always used (flash-attn is CUDA-only); it picks the fused flash-attention kernel
+automatically.
+
+### ROCm (AMD GPUs)
+
+Install a ROCm build of PyTorch first (see [pytorch.org](https://pytorch.org) for the current version), then
+install as above. Installing `idol` with plain `pip install -e .` may otherwise pull in the default torch build,
+which cannot use AMD GPUs. Verify in the same Python environment you run Idol with:
+
+```bash
+python -c "import torch; print(torch.version.hip, torch.cuda.is_available())"   # e.g. '6.4.60004...' True
+```
+
+Run with `--device rocm` (or `amd`) to select and verify the AMD GPU explicitly. The default `--device cuda` also
+addresses AMD GPUs through a ROCM build of PyTorch — it is the same `cuda` device PyTorch exposes on both platforms.
+On Linux, the user running Idol needs access to the GPU: add them to the `render` and `video` groups and log out
+and back in. The pipeline stops with an explanation when the GPU it is asked for cannot be used; pass `--device cpu`
+to sample on the CPU regardless (much slower), or `--device cuda:1` to pick a second GPU.
 
 ## Inference
 
@@ -73,6 +91,7 @@ Other flags:
 | `--num_gaussians` | 262144 | 32,768 to 1,048,576, a multiple of 32 |
 | `--dinov3_dtype` | bf16 | `fp32` runs the DINOv3 encoder in full precision (1.7 GB more memory) |
 | `--weights` | `speridlabs/idol` | a Hugging Face repo or a local folder |
+| `--device` | `cuda` | `rocm` (or `amd`) for AMD GPUs, `cpu` to sample on the CPU, or any torch device string (`cuda:1`) |
 | `--no_optimize` | optimized | turn off the faster sampling (see below) |
 
 **Faster sampling is on by default on GPU** The first image in a process is slower while it pytorch compiles; the rest run at full
