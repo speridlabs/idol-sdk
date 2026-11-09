@@ -73,12 +73,11 @@ Other flags:
 | `--num_gaussians` | 262144 | 32,768 to 1,048,576, a multiple of 32 |
 | `--dinov3_dtype` | bf16 | `fp32` runs the DINOv3 encoder in full precision (1.7 GB more memory) |
 | `--weights` | `speridlabs/idol` | a Hugging Face repo or a local folder |
-| `--device` | best available | `cuda`, `mps` or `cpu`; default picks CUDA, then Apple Silicon MPS, then CPU (`IDOL_DEVICE` overrides) |
+| `--device` | best available | `cuda`, `mps` or `cpu` (default: CUDA, then MPS, then CPU; or `IDOL_DEVICE`) |
 | `--no_optimize` | optimized | turn off the faster sampling (see below) |
 
 **Faster sampling is on by default on CUDA** The first image in a process is slower while it pytorch compiles; the rest run at full
-speed. The optimization (torch.compile, batched guidance, cuDNN attention, TF32) is CUDA-only; MPS and CPU
-sample eagerly.
+speed.
 
 ### Python API
 
@@ -89,6 +88,18 @@ pipeline = IdolPipeline.from_pretrained("speridlabs/idol")
 output = pipeline("photo.jpg", mode="real", seed=42, num_gaussians=1_048_576)
 output.gaussian.save_ply("photo.ply")
 output.preprocessed_image.save("photo_input.png")
+```
+
+The image encoders come from the Hugging Face repos named in the weights' `config.json`. `image_encoders` takes them
+from somewhere else, by name: another repo id, a local folder in the same layout (FLUX.2's with its autoencoder under
+`vae/`), or a model you have already loaded. Only repo ids are checked for gated access, so local copies load offline
+without a token:
+
+```python
+pipeline = IdolPipeline.from_pretrained("speridlabs/idol", image_encoders={
+    "dinov3": "/models/dinov3-vith16plus-pretrain-lvd1689m",  # or a loaded transformers DINOv3 model
+    "flux2_vae": "/models/FLUX.2-klein-4B",                   # any FLUX.2 repo with the same autoencoder in vae/
+})
 ```
 
 ### Demo
@@ -147,32 +158,8 @@ settings on every GPU, one GPU per machine.
 
 ### Apple Silicon (MPS)
 
-Measured on an M4 MacBook Air (10-core GPU, 26 GB) with PyTorch 2.15, fp16, using `--device mps` /
-`IDOL_DEVICE=mps`. The CUDA fast path is unavailable, so sampling is eager.
-
-| Stage | Time |
-|---|---|
-| Load weights | 9 s |
-| Preprocess (BiRefNet) + DINOv3 + FLUX.2 VAE encoders | ~10 s |
-| Denoiser forward (one CFG pass) | 10.2–10.7 s |
-| Euler step (conditional + unconditional) | ~21 s |
-| Decode, 65,536 Gaussians | 2.6 s |
-| Decode, 262,144 Gaussians | 8.2 s |
-
-| Workload | Time |
-|---|---|
-| 5 steps, 32,768 Gaussians | ~2 min |
-| 10 steps, 65,536 Gaussians | ~4 min |
-| 20 steps, 131,072 Gaussians | ~7.5 min |
-| 50 steps, 262,144 Gaussians (default) | ~18 min |
-
-The workload is compute-bound (~23 TFLOP per denoiser forward) and the M4's fp16 throughput is the limit:
-the default is roughly 60× slower than an A100. Use 10–20 steps for interactive runs. `batch_cfg`,
-`torch.compile`, Core ML/ANE and MLX were each measured on MPS and none improve on this path. Peak memory
-during decode is ~16 GB, so 262,144 Gaussians needs a 24 GB or larger machine.
-
-BiRefNet also runs in fp16 on MPS, as on CUDA: ~5.8 s versus ~7.3 s in fp32 for a 1024² image, with a
-mask IoU of 0.9999 against the fp32 result.
+Picked automatically on a Mac, or with `--device mps`. Sampling is eager (the fast path is CUDA-only). On an M4
+MacBook Air: ~4 min for 10 steps and 65,536 Gaussians, ~18 min for the default 50 steps and 262,144 (needs 24 GB).
 
 ## Acknowledgements
 

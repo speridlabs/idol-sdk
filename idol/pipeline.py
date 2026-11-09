@@ -12,7 +12,7 @@ from safetensors.torch import load_file
 from tensordict import TensorDict
 
 from .camera import decode_camera
-from .conditioning import ImageEncoder, require_encoder_access
+from .conditioning import ImageEncoder, hub_repos, require_encoder_access
 from .device import resolve_device
 from .gaussian import Gaussian
 from .models import BiRefNet, GaussianFixedlenDecoder, LatentSeqMMFlowModel, OctreeProbabilityFixedlenDecoder
@@ -46,17 +46,25 @@ def compile_for_sampling(denoiser):
             module.forward = types.MethodType(compiled[type(module)], module)
 
 
+def encoder_sources(config: dict, overrides: Optional[dict]) -> dict:
+    """config.json's image encoders with `overrides` (by name) in their place."""
+    unknown = set(overrides or {}) - set(config['image_encoders'])
+    if unknown:
+        raise ValueError(f'image_encoders: unknown encoder {sorted(unknown)}; '
+                         f'expected {sorted(config["image_encoders"])}')
+    return {**config['image_encoders'], **(overrides or {})}
+
+
 class IdolPipeline:
-    """optimize (default on, CUDA only): ~1.7x faster sampling at the same output quality: compiled denoiser
-    (torch.compile), conditional and unconditional passes batched together, cuDNN attention and TF32 matmuls while
-    sampling. The first generation in a process compiles first. optimize=False runs everything eagerly."""
+    """optimize (CUDA, default on): torch.compile, batched CFG, TF32 and cuDNN attention (sm80+) while sampling.
+    image_encoders: replace an encoder by name ('dinov3', 'flux2_vae') with a repo id, local folder or loaded model."""
     def __init__(self, weights_dir: str, device: Optional[str] = None, dinov3_dtype: str = 'bf16',
-                 optimize: bool = True):
+                 optimize: bool = True, image_encoders: Optional[dict] = None):
         self.device = resolve_device(device)
         with open(os.path.join(weights_dir, 'config.json')) as f:
             self.config = json.load(f)
-        encoders = self.config['image_encoders']
-        require_encoder_access([encoders['dinov3'], encoders['flux2_vae']])
+        encoders = encoder_sources(self.config, image_encoders)
+        require_encoder_access(hub_repos([encoders['dinov3'], encoders['flux2_vae']]))
 
         def load(model, name):
             model.load_state_dict(load_file(os.path.join(weights_dir, f'{name}.safetensors')), strict=True)
@@ -71,6 +79,9 @@ class IdolPipeline:
         self.image_encoder = ImageEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype=dinov3_dtype,
                                           device=self.device)
         self.optimize = optimize and self.device.type == 'cuda'
+        # PyTorch's cuDNN attention kernel needs compute capability 8.0+ (Ampere and newer); on older GPUs such as
+        # the T4 (sm_75), restricting SDPA to it fails, so sampling keeps the default attention backend there.
+        self.cudnn_attention = self.optimize and torch.cuda.get_device_capability(self.device)[0] >= 8
         if self.optimize:
             compile_for_sampling(self.denoiser)
 
@@ -81,8 +92,8 @@ class IdolPipeline:
         from huggingface_hub import hf_hub_download, snapshot_download
         # check the gated image encoders before downloading the ~3 GB of weights
         with open(hf_hub_download(repo_or_dir, 'config.json')) as f:
-            encoders = json.load(f)['image_encoders']
-        require_encoder_access([encoders['dinov3'], encoders['flux2_vae']])
+            encoders = encoder_sources(json.load(f), kwargs.get('image_encoders'))
+        require_encoder_access(hub_repos([encoders['dinov3'], encoders['flux2_vae']]))
         return cls(snapshot_download(repo_or_dir, allow_patterns=WEIGHT_FILES), **kwargs)
 
     def preprocess(self, image: Union[str, Image.Image], mode: str = 'synthetic',
@@ -130,12 +141,14 @@ class IdolPipeline:
 
     @contextmanager
     def _sampling_settings(self):
-        """optimize=True: cuDNN attention and TF32 matmuls for the denoiser only (cuDNN is slower in the decoders)."""
+        """optimize=True: cuDNN attention (where supported) and TF32 matmuls for the denoiser only (cuDNN is slower in
+        the decoders)."""
         if not self.optimize:
             yield
             return
         backend, tf32 = layers.ATTN_BACKEND, torch.backends.cuda.matmul.allow_tf32
-        layers.ATTN_BACKEND = 'sdpa_cudnn'
+        if self.cudnn_attention:
+            layers.ATTN_BACKEND = 'sdpa_cudnn'
         torch.backends.cuda.matmul.allow_tf32 = True
         try:
             yield

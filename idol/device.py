@@ -1,15 +1,10 @@
-"""Device selection for inference.
-
-Idol runs on CUDA, Apple Silicon MPS and CPU. The pipeline, CLI and demo all call ``resolve_device`` so
-they agree on the same order: an explicit device, then ``IDOL_DEVICE``, then CUDA, MPS, CPU.
-"""
 import os
 
 import torch
 
 
 def resolve_device(device=None) -> torch.device:
-    """Return ``device`` when given, else ``IDOL_DEVICE``, else the best available: CUDA, MPS, CPU."""
+    """The given device, else IDOL_DEVICE, else CUDA, then MPS, then CPU."""
     if device is not None:
         return torch.device(device)
     requested = os.environ.get('IDOL_DEVICE')
