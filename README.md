@@ -45,6 +45,8 @@ and [black-forest-labs/FLUX.2-dev](https://huggingface.co/black-forest-labs/FLUX
 `flash-attn`, if installed, is used for attention; otherwise PyTorch's `scaled_dot_product_attention` is (same
 result, slower). Set `ATTN_BACKEND=sdpa` or `ATTN_BACKEND=flash_attn` to choose.
 
+AMD GPUs work through a [ROCm build of PyTorch](https://pytorch.org/get-started/locally/); install it before Idol.
+
 ## Inference
 
 ```bash

@@ -79,9 +79,9 @@ class IdolPipeline:
         self.image_encoder = ImageEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype=dinov3_dtype,
                                           device=self.device)
         self.optimize = optimize and self.device.type == 'cuda'
-        # PyTorch's cuDNN attention kernel needs compute capability 8.0+ (Ampere and newer); on older GPUs such as
-        # the T4 (sm_75), restricting SDPA to it fails, so sampling keeps the default attention backend there.
-        self.cudnn_attention = self.optimize and torch.cuda.get_device_capability(self.device)[0] >= 8
+        # cuDNN attention: NVIDIA sm80+ only (not on older GPUs such as the T4, nor on AMD GPUs through ROCm)
+        self.cudnn_attention = (self.optimize and torch.version.hip is None
+                                and torch.cuda.get_device_capability(self.device)[0] >= 8)
         if self.optimize:
             compile_for_sampling(self.denoiser)
 
