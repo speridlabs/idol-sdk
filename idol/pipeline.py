@@ -13,6 +13,7 @@ from tensordict import TensorDict
 
 from .camera import decode_camera
 from .conditioning import ImageEncoder, hub_repos, require_encoder_access
+from .device import resolve_device
 from .gaussian import Gaussian
 from .models import BiRefNet, GaussianFixedlenDecoder, LatentSeqMMFlowModel, OctreeProbabilityFixedlenDecoder
 from .models import layers
@@ -59,7 +60,7 @@ class IdolPipeline:
     image_encoders: replace an encoder by name ('dinov3', 'flux2_vae') with a repo id, local folder or loaded model."""
     def __init__(self, weights_dir: str, device: Optional[str] = None, dinov3_dtype: str = 'bf16',
                  optimize: bool = True, image_encoders: Optional[dict] = None):
-        self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+        self.device = resolve_device(device)
         with open(os.path.join(weights_dir, 'config.json')) as f:
             self.config = json.load(f)
         encoders = encoder_sources(self.config, image_encoders)
@@ -73,7 +74,7 @@ class IdolPipeline:
         self.decoder = load(OctreeProbabilityFixedlenDecoder(**self.config['decoder']['args']), 'decoder')
         self.decoder_gs = load(GaussianFixedlenDecoder(**self.config['decoder_gs']['args']), 'decoder_gs')
         self.background_remover = load(BiRefNet(), 'birefnet')
-        if self.device.type == 'cuda':
+        if self.device.type in ('cuda', 'mps'):
             self.background_remover.half()
         self.image_encoder = ImageEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype=dinov3_dtype,
                                           device=self.device)
