@@ -1,3 +1,6 @@
+import logging
+import warnings
+
 import torch
 import torch.nn.functional as F
 from tensordict import TensorDict
@@ -62,12 +65,15 @@ class ImageEncoder:
         from diffusers.models import AutoencoderKLFlux2
         from transformers import AutoModel
 
+        warnings.filterwarnings('ignore', message=r'.*local_dir_use_symlinks.*', category=UserWarning)
+        logging.getLogger('diffusers.configuration_utils').setLevel(logging.ERROR)
+
         self.device = torch.device(device)
         if isinstance(dinov3, str):
-            dinov3 = AutoModel.from_pretrained(dinov3, torch_dtype=DTYPES[dinov3_dtype])
+            dinov3 = AutoModel.from_pretrained(dinov3, dtype=DTYPES[dinov3_dtype])
         self.dinov3 = dinov3.eval().requires_grad_(False).to(self.device)
         if isinstance(flux2_vae, str):
-            flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae, subfolder='vae', torch_dtype=torch.bfloat16)
+            flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae, subfolder='vae', dtype=torch.bfloat16)
         self.flux2_vae = flux2_vae.eval().requires_grad_(False).to(self.device)
 
     def _dinov3_tokens(self, images):
