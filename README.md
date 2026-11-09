@@ -73,10 +73,11 @@ Other flags:
 | `--num_gaussians` | 262144 | 32,768 to 1,048,576, a multiple of 32 |
 | `--dinov3_dtype` | bf16 | `fp32` runs the DINOv3 encoder in full precision (1.7 GB more memory) |
 | `--weights` | `speridlabs/idol` | a Hugging Face repo or a local folder |
+| `--device` | best available | `cuda`, `mps` or `cpu` (default: CUDA, then MPS, then CPU; or `IDOL_DEVICE`) |
 | `--no_optimize` | optimized | turn off the faster sampling (see below) |
 
-**Faster sampling is on by default on GPU** The first image in a process is slower while it pytorch compiles; the rest run at full
-speed. 
+**Faster sampling is on by default on CUDA** The first image in a process is slower while it pytorch compiles; the rest run at full
+speed.
 
 ### Python API
 
@@ -87,6 +88,18 @@ pipeline = IdolPipeline.from_pretrained("speridlabs/idol")
 output = pipeline("photo.jpg", mode="real", seed=42, num_gaussians=1_048_576)
 output.gaussian.save_ply("photo.ply")
 output.preprocessed_image.save("photo_input.png")
+```
+
+The image encoders come from the Hugging Face repos named in the weights' `config.json`. `image_encoders` takes them
+from somewhere else, by name: another repo id, a local folder in the same layout (FLUX.2's with its autoencoder under
+`vae/`), or a model you have already loaded. Only repo ids are checked for gated access, so local copies load offline
+without a token:
+
+```python
+pipeline = IdolPipeline.from_pretrained("speridlabs/idol", image_encoders={
+    "dinov3": "/models/dinov3-vith16plus-pretrain-lvd1689m",  # or a loaded transformers DINOv3 model
+    "flux2_vae": "/models/FLUX.2-klein-4B",                   # any FLUX.2 repo with the same autoencoder in vae/
+})
 ```
 
 ### Demo
@@ -142,6 +155,11 @@ settings on every GPU, one GPU per machine.
 | RTX 4090 | 24 GB | 19.1 s |
 | RTX 3080 | 10 GB | 46.2 s |
 | L4 | 22 GB | 54.6 s |
+
+### Apple Silicon (MPS)
+
+Picked automatically on a Mac, or with `--device mps`. Sampling is eager (the fast path is CUDA-only). On an M4
+MacBook Air: ~4 min for 10 steps and 65,536 Gaussians, ~18 min for the default 50 steps and 262,144 (needs 24 GB).
 
 ## Acknowledgements
 

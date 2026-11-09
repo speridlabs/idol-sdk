@@ -1,3 +1,6 @@
+import logging
+import warnings
+
 import torch
 import torch.nn.functional as F
 from tensordict import TensorDict
@@ -49,12 +52,16 @@ def require_encoder_access(repos):
                              f'{pages}\n{steps}')
 
 
-class ImageEncoder:
-    def __init__(self, dinov3_repo: str, flux2_vae_repo: str,
-                 dinov3_dtype: str = 'bf16', device: str = 'cuda'):
-        import logging
-        import warnings
+def hub_repos(sources):
+    """The sources that are Hub repo ids (not local folders)."""
+    import os
 
+    return [s for s in sources if isinstance(s, str) and not os.path.isdir(s)]
+
+
+class ImageEncoder:
+    """Each encoder is a repo id, a local folder or a loaded model (kept in its own dtype)."""
+    def __init__(self, dinov3, flux2_vae, dinov3_dtype: str = 'bf16', device: str = 'cuda'):
         from diffusers.models import AutoencoderKLFlux2
         from transformers import AutoModel
 
@@ -62,11 +69,12 @@ class ImageEncoder:
         logging.getLogger('diffusers.configuration_utils').setLevel(logging.ERROR)
 
         self.device = torch.device(device)
-        self.dinov3 = AutoModel.from_pretrained(dinov3_repo, dtype=DTYPES[dinov3_dtype])
-        self.dinov3 = self.dinov3.eval().requires_grad_(False).to(self.device)
-        self.flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae_repo, subfolder='vae',
-                                                            dtype=torch.bfloat16)
-        self.flux2_vae = self.flux2_vae.eval().requires_grad_(False).to(self.device)
+        if isinstance(dinov3, str):
+            dinov3 = AutoModel.from_pretrained(dinov3, dtype=DTYPES[dinov3_dtype])
+        self.dinov3 = dinov3.eval().requires_grad_(False).to(self.device)
+        if isinstance(flux2_vae, str):
+            flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae, subfolder='vae', dtype=torch.bfloat16)
+        self.flux2_vae = flux2_vae.eval().requires_grad_(False).to(self.device)
 
     def _dinov3_tokens(self, images):
         mean = torch.tensor(IMAGENET_MEAN, device=images.device).view(1, 3, 1, 1)

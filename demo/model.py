@@ -10,8 +10,9 @@ DEFAULTS = {'steps': 50, 'cfg': 3.0, 'rescale_t': 3.0, 'gaussians': '262,144', '
 
 # Weights load once at import; on ZeroGPU the CUDA placement is deferred to the GPU worker.
 # ZeroGPU does not support torch.compile, so the Space samples without the optimized path.
-pipeline = IdolPipeline.from_pretrained(os.environ.get('IDOL_WEIGHTS', 'speridlabs/idol'), device='cuda',
-                                        optimize=not os.environ.get('SPACES_ZERO_GPU'))
+zero_gpu = bool(os.environ.get('SPACES_ZERO_GPU'))
+pipeline = IdolPipeline.from_pretrained(os.environ.get('IDOL_WEIGHTS', 'speridlabs/idol'),
+                                        device='cuda' if zero_gpu else None, optimize=not zero_gpu)
 OUTPUT_DIR = tempfile.mkdtemp(prefix='idol-')
 
 
