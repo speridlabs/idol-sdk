@@ -48,7 +48,8 @@ def compile_for_sampling(denoiser):
 class IdolPipeline:
     """optimize (default on, CUDA only): ~1.7x faster sampling at the same output quality: compiled denoiser
     (torch.compile), conditional and unconditional passes batched together, cuDNN attention and TF32 matmuls while
-    sampling. The first generation in a process compiles first. optimize=False runs everything eagerly."""
+    sampling (cuDNN attention only on GPUs that support it, compute capability 8.0+). The first generation in a
+    process compiles first. optimize=False runs everything eagerly."""
     def __init__(self, weights_dir: str, device: Optional[str] = None, dinov3_dtype: str = 'bf16',
                  optimize: bool = True):
         self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -70,6 +71,9 @@ class IdolPipeline:
         self.image_encoder = ImageEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype=dinov3_dtype,
                                           device=self.device)
         self.optimize = optimize and self.device.type == 'cuda'
+        # PyTorch's cuDNN attention kernel needs compute capability 8.0+ (Ampere and newer); on older GPUs such as
+        # the T4 (sm_75), restricting SDPA to it fails, so sampling keeps the default attention backend there.
+        self.cudnn_attention = self.optimize and torch.cuda.get_device_capability(self.device)[0] >= 8
         if self.optimize:
             compile_for_sampling(self.denoiser)
 
@@ -129,12 +133,14 @@ class IdolPipeline:
 
     @contextmanager
     def _sampling_settings(self):
-        """optimize=True: cuDNN attention and TF32 matmuls for the denoiser only (cuDNN is slower in the decoders)."""
+        """optimize=True: cuDNN attention (where supported) and TF32 matmuls for the denoiser only (cuDNN is slower in
+        the decoders)."""
         if not self.optimize:
             yield
             return
         backend, tf32 = layers.ATTN_BACKEND, torch.backends.cuda.matmul.allow_tf32
-        layers.ATTN_BACKEND = 'sdpa_cudnn'
+        if self.cudnn_attention:
+            layers.ATTN_BACKEND = 'sdpa_cudnn'
         torch.backends.cuda.matmul.allow_tf32 = True
         try:
             yield
