@@ -255,8 +255,8 @@ class RopeMultiHeadAttention(nn.Module):
         q = self.q_norm(apply_rotary_emb(q, rope_emb))
         k = self.k_norm(apply_rotary_emb(k, rope_emb))
         if self.compact_cfg_queries and q.shape == (2, 12294, 16, 64) and q.dtype == torch.float16:
-            from .sm75_attention import same_queries
-            h = same_queries(q, k, v)
+            from .guidance_attention import same_queries
+            h = same_queries(q, k, v, ATTN_BACKEND == "sdpa_cudnn")
         else:
             h = scaled_dot_product_attention(q, k, v)
         return self.out(h.reshape(B, L, C))
