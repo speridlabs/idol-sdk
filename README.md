@@ -90,6 +90,11 @@ output.gaussian.save_ply("photo.ply")
 output.preprocessed_image.save("photo_input.png")
 ```
 
+`IdolPipeline` is a [`PyTorchModelHubMixin`](https://huggingface.co/docs/huggingface_hub/package_reference/mixins#huggingface_hub.PyTorchModelHubMixin)
+model: `save_pretrained("folder")` and `push_to_hub("you/idol")` write `config.json`, `model.safetensors` and a model
+card, and `from_pretrained` reads them back. It also reads the per-model files (`denoiser.safetensors`, ...) of the first
+release.
+
 The image encoders come from the Hugging Face repos named in the weights' `config.json`. `image_encoders` takes them
 from somewhere else, by name: another repo id, a local folder in the same layout (FLUX.2's with its autoencoder under
 `vae/`), or a model you have already loaded. Only repo ids are checked for gated access, so local copies load offline

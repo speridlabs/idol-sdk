@@ -1,4 +1,3 @@
-import json
 import os
 import types
 from contextlib import contextmanager
@@ -7,9 +6,12 @@ from typing import Optional, Union
 
 import numpy as np
 import torch
+from huggingface_hub import PyTorchModelHubMixin, hf_hub_download, whoami
+from huggingface_hub.errors import EntryNotFoundError
 from PIL import Image
-from safetensors.torch import load_file
+from safetensors.torch import load_file, load_model
 from tensordict import TensorDict
+from torch import nn
 
 from .camera import decode_camera
 from .conditioning import ImageEncoder, hub_repos, require_encoder_access
@@ -22,8 +24,38 @@ from .preprocess import CROP_MARGIN, preprocess_image
 from .sampler import sample_flow
 
 DEFAULT_REPO = 'speridlabs/idol'
-WEIGHT_FILES = ['config.json', 'denoiser.safetensors', 'decoder.safetensors', 'decoder_gs.safetensors',
-                'birefnet.safetensors']
+DEFAULT_IMAGE_ENCODERS = {'dinov3': 'facebook/dinov3-vith16plus-pretrain-lvd1689m',
+                          'flux2_vae': 'black-forest-labs/FLUX.2-dev'}
+WEIGHTS_FILE = 'model.safetensors'  # the PyTorchModelHubMixin layout: one file, keys prefixed by submodule
+# the layout of the first release (still the one on the Hub): one file per submodule, loaded when WEIGHTS_FILE is absent
+LEGACY_WEIGHT_FILES = {'denoiser': 'denoiser.safetensors', 'decoder': 'decoder.safetensors',
+                       'decoder_gs': 'decoder_gs.safetensors', 'background_remover': 'birefnet.safetensors'}
+
+MODEL_CARD_TEMPLATE = """---
+{{ card_data }}
+---
+
+# Idol: a single image to 3D Gaussians
+
+This model has been pushed to the Hub using the
+[PyTorchModelHubMixin](https://huggingface.co/docs/huggingface_hub/package_reference/mixins#huggingface_hub.PyTorchModelHubMixin)
+integration of [idol]({{ repo_url }}).
+
+```bash
+pip install git+{{ repo_url }}
+```
+
+```python
+from idol import IdolPipeline
+
+pipeline = IdolPipeline.from_pretrained("{{ repo_id | default("speridlabs/idol", true) }}")
+output = pipeline("photo.jpg", mode="real")
+output.gaussian.save_ply("photo.ply")
+```
+
+- Code: {{ repo_url }}
+- Paper: {{ paper_url }}
+"""
 
 
 @dataclass
@@ -55,25 +87,37 @@ def encoder_sources(config: dict, overrides: Optional[dict]) -> dict:
     return {**config['image_encoders'], **(overrides or {})}
 
 
-class IdolPipeline:
-    """optimize (CUDA, default on): torch.compile, batched CFG, TF32 and cuDNN attention (sm80+) while sampling.
+class IdolPipeline(nn.Module, PyTorchModelHubMixin, library_name='idol',
+                   repo_url='https://github.com/speridlabs/idol-sdk', paper_url='https://speridlabs.com/research/idol',
+                   license='apache-2.0', pipeline_tag='image-to-3d', tags=['gaussian-splatting', '3d', 'image-to-3d'],
+                   model_card_template=MODEL_CARD_TEMPLATE):
+    """Image -> 3D Gaussians. ``IdolPipeline.from_pretrained(repo_or_dir)`` loads it; the config arguments (denoiser to
+    image_encoders) are the keys of the weights' config.json, the rest are runtime options that are not saved.
+
+    optimize (CUDA, default on): torch.compile, batched CFG, TF32 and cuDNN attention (sm80+) while sampling.
     image_encoders: replace an encoder by name ('dinov3', 'flux2_vae') with a repo id, local folder or loaded model."""
-    def __init__(self, weights_dir: str, device: Optional[str] = None, dinov3_dtype: str = 'bf16',
-                 optimize: bool = True, image_encoders: Optional[dict] = None):
+    def __init__(self, denoiser: dict, decoder: dict, decoder_gs: dict, image_size: int = 1024,
+                 max_voxel_level: int = 8, image_encoders: Optional[dict] = None, device: Optional[str] = None,
+                 dinov3_dtype: str = 'bf16', optimize: bool = True):
+        super().__init__()
+        encoders = encoder_sources({'image_encoders': DEFAULT_IMAGE_ENCODERS}, image_encoders)
+        # config.json holds the model config only (not device / optimize); encoders given as a local folder or a loaded
+        # model are saved as their default repo
+        self.config = {
+            'denoiser': denoiser, 'decoder': decoder, 'decoder_gs': decoder_gs, 'image_size': image_size,
+            'max_voxel_level': max_voxel_level,
+            'image_encoders': {name: source if hub_repos([source]) else DEFAULT_IMAGE_ENCODERS[name]
+                               for name, source in encoders.items()},
+        }
+        self._hub_mixin_config = self.config
         self.device = resolve_device(device)
-        with open(os.path.join(weights_dir, 'config.json')) as f:
-            self.config = json.load(f)
-        encoders = encoder_sources(self.config, image_encoders)
         require_encoder_access(hub_repos([encoders['dinov3'], encoders['flux2_vae']]))
 
-        def load(model, name):
-            model.load_state_dict(load_file(os.path.join(weights_dir, f'{name}.safetensors')), strict=True)
-            return model.eval().requires_grad_(False).to(self.device)
-
-        self.denoiser = load(LatentSeqMMFlowModel(**self.config['denoiser']['args']), 'denoiser')
-        self.decoder = load(OctreeProbabilityFixedlenDecoder(**self.config['decoder']['args']), 'decoder')
-        self.decoder_gs = load(GaussianFixedlenDecoder(**self.config['decoder_gs']['args']), 'decoder_gs')
-        self.background_remover = load(BiRefNet(), 'birefnet')
+        self.denoiser = LatentSeqMMFlowModel(**denoiser['args'])
+        self.decoder = OctreeProbabilityFixedlenDecoder(**decoder['args'])
+        self.decoder_gs = GaussianFixedlenDecoder(**decoder_gs['args'])
+        self.background_remover = BiRefNet()
+        self.eval().requires_grad_(False).to(self.device)
         if self.device.type in ('cuda', 'mps'):
             self.background_remover.half()
         self.image_encoder = ImageEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype=dinov3_dtype,
@@ -86,15 +130,46 @@ class IdolPipeline:
             compile_for_sampling(self.denoiser)
 
     @classmethod
-    def from_pretrained(cls, repo_or_dir: str = DEFAULT_REPO, **kwargs) -> 'IdolPipeline':
-        if os.path.isdir(repo_or_dir):
-            return cls(repo_or_dir, **kwargs)
-        from huggingface_hub import hf_hub_download, snapshot_download
-        # check the gated image encoders before downloading the ~3 GB of weights
-        with open(hf_hub_download(repo_or_dir, 'config.json')) as f:
-            encoders = encoder_sources(json.load(f), kwargs.get('image_encoders'))
-        require_encoder_access(hub_repos([encoders['dinov3'], encoders['flux2_vae']]))
-        return cls(snapshot_download(repo_or_dir, allow_patterns=WEIGHT_FILES), **kwargs)
+    def from_pretrained(cls, pretrained_model_name_or_path: str = DEFAULT_REPO, **kwargs) -> 'IdolPipeline':
+        """A Hub repo id or a local folder: config.json plus model.safetensors (save_pretrained / push_to_hub), or
+        the first release's per-model files (denoiser, decoder, decoder_gs, birefnet .safetensors).
+
+        kwargs: device, dinov3_dtype, optimize, image_encoders (see the class) and the Hub download options of
+        PyTorchModelHubMixin.from_pretrained (revision, token, cache_dir, force_download, local_files_only)."""
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
+    @classmethod
+    def _from_pretrained(cls, *, model_id: str, revision: Optional[str], cache_dir, force_download: bool,
+                         local_files_only: bool, token, config: Optional[dict] = None, strict: bool = True,
+                         **model_kwargs) -> 'IdolPipeline':
+        if config is None:
+            raise FileNotFoundError(f'{model_id}: no config.json, not Idol weights')
+        # image_encoders overrides a few encoders by name; the others stay the ones in config.json
+        model_kwargs['image_encoders'] = encoder_sources(config, model_kwargs.get('image_encoders'))
+        model = cls(**model_kwargs)
+
+        def fetch(filename):
+            if os.path.isdir(model_id):
+                path = os.path.join(model_id, filename)
+                if not os.path.isfile(path):
+                    raise EntryNotFoundError(f'{path} not found')
+                return path
+            return hf_hub_download(model_id, filename, revision=revision, cache_dir=cache_dir,
+                                   force_download=force_download, local_files_only=local_files_only, token=token)
+
+        try:
+            load_model(model, fetch(WEIGHTS_FILE), strict=strict)
+        except EntryNotFoundError:  # (also offline, when not cached) the first release's per-model files instead
+            for name, filename in LEGACY_WEIGHT_FILES.items():
+                getattr(model, name).load_state_dict(load_file(fetch(filename)), strict=True)
+        return model.eval()
+
+    def push_to_hub(self, repo_id: str, *, model_card_kwargs: Optional[dict] = None, **kwargs) -> str:
+        """PyTorchModelHubMixin.push_to_hub; a bare repo name goes to your account and the model card shows the repo."""
+        if '/' not in repo_id:
+            repo_id = f"{whoami(token=kwargs.get('token'))['name']}/{repo_id}"
+        model_card_kwargs = {'repo_id': repo_id, **(model_card_kwargs or {})}
+        return super().push_to_hub(repo_id, model_card_kwargs=model_card_kwargs, **kwargs)
 
     def preprocess(self, image: Union[str, Image.Image], mode: str = 'synthetic',
                    crop_margin: Optional[float] = None) -> Image.Image:
@@ -107,7 +182,7 @@ class IdolPipeline:
                                 image_size=self.config['image_size'], crop_margin=margin)
 
     @torch.no_grad()
-    def __call__(
+    def forward(
         self,
         image: Union[str, Image.Image],
         mode: str = 'synthetic',
