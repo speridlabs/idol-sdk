@@ -34,6 +34,7 @@ Each pair: the input image and the generated object turning. The
 
 ```bash
 pip install -e .              # Python >= 3.10, PyTorch >= 2.5
+pip install -e ".[fast]"      # + the fast CUDA sampler
 pip install -e ".[demo]"      # + Gradio, to run the demo locally
 ```
 
@@ -79,6 +80,20 @@ Other flags:
 **Faster sampling is on by default on CUDA** The first image in a process is slower while it pytorch compiles; the rest run at full
 speed.
 
+### Fast CUDA inference
+
+Install the `fast` extra and wrap an eager CUDA pipeline to use the fused IDOL kernels:
+
+```python
+from idol import IdolPipeline
+from idol.fast import FastIdolPipeline
+
+pipeline = FastIdolPipeline(IdolPipeline.from_pretrained(device="cuda", optimize=False))
+pipeline("photo.jpg", mode="real").save_ply("model.ply")
+```
+
+For offline deployments, call `idol.fast.ops.prefetch_kernel()` when building the image to cache the pinned CUDA kernel.
+
 ### Python API
 
 ```python
@@ -110,6 +125,7 @@ with the example images. It runs on ZeroGPU there, sampling with the fast build 
 pipeline), and on any local GPU:
 
 ```bash
+pip install -e ".[fast]"      # + the fast CUDA sampler
 pip install -e ".[demo]"
 cd demo && python app.py
 ```

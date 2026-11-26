@@ -4,21 +4,14 @@ Front end (preprocess, BiRefNet, DINOv3, FLUX.2 VAE) is the reference code; the 
 as the reference (seed, VAE posterior noise, latent noise, camera noise), so the sampler starts from the same noise.
 Then: fast sampler (fast/model.py), octree descent with a loop-free systematic resampling, the reference Gaussian
 decoder, and the Gaussian activations + PLY columns fused in one kernel (`gaussians_ply`), written with one write.
-
-parity=True turns every arithmetic-changing piece off: reference sampler structure with only bit-equal reuse
-(context once, shared per-step prefix), reference octree sampling, reference activations + plyfile writer.
 """
-import json
-import os
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from tensordict import TensorDict
 
 from idol import IdolPipeline
 from idol.camera import decode_camera
-from idol.models import OctreeProbabilityFixedlenDecoder
 
 from .model import FastDenoiser
 from .ops import kernel
@@ -77,47 +70,35 @@ def write_ply_rows(path, rows):
 
 
 class FastOutput:
-    def __init__(self, rows=None, gaussian=None, preprocessed_image=None, camera=None, latent=None):
-        self.rows, self.gaussian, self.preprocessed_image, self.camera, self.latent = (rows, gaussian,
-                                                                                       preprocessed_image, camera,
-                                                                                       latent)
+    def __init__(self, rows, preprocessed_image, camera, latent):
+        self.rows = rows
+        self.preprocessed_image = preprocessed_image
+        self.camera = camera
+        self.latent = latent
 
     def save_ply(self, path):
-        if self.rows is not None:
-            write_ply_rows(path, self.rows.cpu().numpy())
-        else:
-            self.gaussian.save_ply(path)
+        write_ply_rows(path, self.rows.cpu().numpy())
 
 
 class FastIdolPipeline:
-    def __init__(self, weights='/w/idol', dinov3='/w/dinov3', flux2='/w/flux2', parity=False, collapse_uncond=True,
-                 attn='fa3', cuda_graph=False, fast_octree=True, fast_export=True, ref=None):
-        """ref: an already loaded IdolPipeline(optimize=False) to build on (its modules are shared, not modified),
-        e.g. so one process can run the official eager pipeline and the fast build on the same weights."""
-        os.environ.setdefault('ATTN_BACKEND', 'sdpa')
-        self.parity = parity
-        if ref is None:
-            enc = {k: v for k, v in (('dinov3', dinov3), ('flux2_vae', flux2)) if v}  # None: config.json's Hub ids
-            ref = IdolPipeline(weights, device='cuda', optimize=False, image_encoders=enc or None)
-        assert not ref.optimize, 'FastIdolPipeline builds on the eager reference (optimize=False)'
+    def __init__(self, ref: IdolPipeline):
+        """Run the CUDA sampler on an eager IDOL pipeline, sharing its encoders and weights."""
+        if ref.optimize or torch.device(ref.device).type != 'cuda':
+            raise ValueError('FastIdolPipeline requires a CUDA IdolPipeline with optimize=False')
         self.ref = ref
-        self.fast_octree = fast_octree and not parity
-        self.fast_export = fast_export and not parity
-        if not parity:
-            self.sampler = FastDenoiser(self.ref.denoiser, collapse_uncond=collapse_uncond, attn=attn,
-                                        cuda_graph=cuda_graph)
-            self.K = kernel()
-            g = self.ref.decoder_gs
-            rc = g.rep_config
-            x = torch.tensor(rc['scaling_bias'])
-            self.scaling_offset = float(x + torch.log(-torch.expm1(-x)))
-            y = torch.tensor(rc['opacity_bias'])
-            self.opacity_offset = float(torch.log(y / (1 - y)))
-            self.gs_args = (float(g.base_offset_scale), self.scaling_offset, self.opacity_offset,
-                            rc['3d_filter_kernel_size'], rc['lr']['_rotation'], rc['perturbe_size'])
-            for k in ('_xyz', '_features_dc', '_scaling', '_opacity'):
-                assert rc['lr'][k] == 1.0, 'gaussians_ply assumes lr 1.0 except rotation'
-            assert rc['num_gaussians'] == 32
+        self.sampler = FastDenoiser(self.ref.denoiser, attn='cudnn')
+        self.K = kernel()
+        g = self.ref.decoder_gs
+        rc = g.rep_config
+        x = torch.tensor(rc['scaling_bias'])
+        self.scaling_offset = float(x + torch.log(-torch.expm1(-x)))
+        y = torch.tensor(rc['opacity_bias'])
+        self.opacity_offset = float(torch.log(y / (1 - y)))
+        self.gs_args = (float(g.base_offset_scale), self.scaling_offset, self.opacity_offset,
+                        rc['3d_filter_kernel_size'], rc['lr']['_rotation'], rc['perturbe_size'])
+        for k in ('_xyz', '_features_dc', '_scaling', '_opacity'):
+            assert rc['lr'][k] == 1.0, 'gaussians_ply assumes lr 1.0 except rotation'
+        assert rc['num_gaussians'] == 32
 
     @torch.no_grad()
     def __call__(self, image, mode='synthetic', seed=42, steps=50, cfg_strength=3.0, rescale_t=3.0,
@@ -140,37 +121,17 @@ class FastIdolPipeline:
             'latent': torch.randn(1, den.q_token_length, den.in_channels, device=ref.device),
             'camera': torch.randn(1, 1, den.cam_channels, device=ref.device),
         }, batch_size=1, device=ref.device)
-        if self.parity:
-            from .parity import sample_parity
-            z, cam = sample_parity(den, noise, cond, steps, rescale_t, cfg_strength)
-        else:
-            z, cam = self.sampler.sample(noise, cond, steps=steps, rescale_t=rescale_t, cfg=cfg_strength)
+        z, cam = self.sampler.sample(noise, cond, steps=steps, rescale_t=rescale_t, cfg=cfg_strength)
         mark('sampling')
         per_anchor = ref.decoder_gs.rep_config['num_gaussians']
         npts = max(1, int(num_gaussians) // per_anchor)
-        if self.fast_octree:
-            anchors = octree_sample_fast(ref.decoder, z, npts, ref.config['max_voxel_level'])
-        else:
-            anchors = OctreeProbabilityFixedlenDecoder.sample(ref.decoder, z, num_points=npts,
-                                                              level=ref.config['max_voxel_level'])
+        anchors = octree_sample_fast(ref.decoder, z, npts, ref.config['max_voxel_level'])
         mark('octree')
         feats = ref.decoder_gs(anchors, z)
         mark('gs_decoder')
         camera = decode_camera(cam[0, 0])
-        if self.fast_export:
-            rows = self.K.gaussians_ply(feats[0].contiguous(), anchors[0].contiguous(),
-                                        ref.decoder_gs.points_offset_perturbation.contiguous(), *self.gs_args)
-            out = FastOutput(rows=rows, preprocessed_image=prepared, camera=camera, latent=z)
-        else:
-            g = ref.decoder_gs.to_representation(anchors, feats)[0]
-            out = FastOutput(gaussian=g, preprocessed_image=prepared, camera=camera, latent=z)
+        rows = self.K.gaussians_ply(feats[0].contiguous(), anchors[0].contiguous(),
+                                    ref.decoder_gs.points_offset_perturbation.contiguous(), *self.gs_args)
+        out = FastOutput(rows, prepared, camera, z)
         mark('to_gaussians')
         return out
-
-
-def save_outputs(out, outdir, name):
-    os.makedirs(outdir, exist_ok=True)
-    out.save_ply(os.path.join(outdir, f'{name}.ply'))
-    out.preprocessed_image.save(os.path.join(outdir, f'{name}_input.png'))
-    with open(os.path.join(outdir, f'{name}_camera.json'), 'w') as f:
-        json.dump(out.camera, f, indent=2)
