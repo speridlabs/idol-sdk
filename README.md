@@ -105,7 +105,9 @@ pipeline = IdolPipeline.from_pretrained("speridlabs/idol", image_encoders={
 ### Demo
 
 The Gradio app behind the [Hugging Face Space](https://huggingface.co/spaces/speridlabs/idol) is in `demo/`,
-with the example images. It runs on ZeroGPU there and on any local GPU:
+with the example images. It runs on ZeroGPU there, sampling with the fast build from
+[idol-cuda](https://github.com/suvadityamuk/idol-cuda) (`demo/fast/`, Apache-2.0, about 1.8x faster than the eager
+pipeline), and on any local GPU:
 
 ```bash
 pip install -e ".[demo]"

@@ -1,0 +1,21 @@
+idol-cuda
+Copyright 2026 Suvaditya Mukherjee
+
+This is an unofficial CUDA port of Idol (single image to 3D Gaussians) by Speri Labs. It is not affiliated with or
+endorsed by Speri Labs.
+
+It contains code derived from idol-sdk (https://github.com/speridlabs/idol-sdk, commit 8db7003),
+Copyright Speri Labs, licensed under the Apache License, Version 2.0:
+  - native/: an op-for-op C++ (libtorch) port of idol-sdk's pipeline, models, preprocessing and writers;
+  - fast/: a re-implementation of idol-sdk's sampler and decoders that imports and reuses idol-sdk's modules;
+  - kernel/: fused CUDA kernels replacing op chains of idol-sdk's models;
+  - space/app.py: reuses a file-fetch workaround from idol-sdk's demo/app.py;
+  - assets/examples/: eight example images copied unchanged from idol-sdk's demo/examples.
+
+native/third_party/libwebp-1.6.0 contains parts of libwebp (https://chromium.googlesource.com/webm/libwebp),
+Copyright Google Inc., under the BSD 3-Clause licence in that directory's COPYING file.
+
+Model weights are not distributed here. Idol's weights (https://huggingface.co/speridlabs/idol) and the gated image
+encoders it uses, DINOv3 (https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m) and the FLUX.2-dev VAE
+(https://huggingface.co/black-forest-labs/FLUX.2-dev), are downloaded from the Hugging Face Hub at run time and are
+governed by their own licences.
