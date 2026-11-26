@@ -1,0 +1,28 @@
+--- a/idol/conditioning.py
++++ b/idol/conditioning.py
+@@ -69,11 +69,14 @@
+         logging.getLogger('diffusers.configuration_utils').setLevel(logging.ERROR)
+ 
+         self.device = torch.device(device)
++        vae_dtype = (torch.float16 if self.device.type == 'cuda' and
++                     torch.cuda.get_device_capability(self.device) == (7, 5) else torch.bfloat16)
++        dino_dtype = vae_dtype if dinov3_dtype == 'bf16' else DTYPES[dinov3_dtype]
+         if isinstance(dinov3, str):
+-            dinov3 = AutoModel.from_pretrained(dinov3, dtype=DTYPES[dinov3_dtype])
++            dinov3 = AutoModel.from_pretrained(dinov3, dtype=dino_dtype)
+         self.dinov3 = dinov3.eval().requires_grad_(False).to(self.device)
+         if isinstance(flux2_vae, str):
+-            flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae, subfolder='vae', dtype=torch.bfloat16)
++            flux2_vae = AutoencoderKLFlux2.from_pretrained(flux2_vae, subfolder='vae', dtype=vae_dtype)
+         self.flux2_vae = flux2_vae.eval().requires_grad_(False).to(self.device)
+ 
+     def _dinov3_tokens(self, images):
+@@ -86,7 +89,7 @@
+ 
+     def _flux2_tokens(self, images):
+         vae = self.flux2_vae
+-        latents = vae.encode(images.to(torch.bfloat16) * 2 - 1).latent_dist.sample()
++        latents = vae.encode(images.to(next(vae.parameters()).dtype) * 2 - 1).latent_dist.sample()
+         batch, channels, height, width = latents.shape
+         latents = latents.view(batch, channels, height // 2, 2, width // 2, 2).permute(0, 1, 3, 5, 2, 4)
+         latents = latents.reshape(batch, channels * 4, height // 2, width // 2)

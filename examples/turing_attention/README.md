@@ -2,9 +2,11 @@
 
 This opt-in example uses the standard IDOL CLI and replaces denoiser self-attention with the noncausal FP16 forward kernel from [FlashAttention Turing](https://github.com/ssiu/flash-attention-turing/tree/9ef98fcb506bb1e2fe3cece50935e2935bf6b124). It computes all query/key interactions on every sampling step. Accumulation order differs from PyTorch SDPA, so the two backends can produce different PLYs.
 
-Build from the repository root with an SM75-capable CUDA compiler and the normal SDK environment. The build fetches a pinned upstream revision and its CUTLASS submodule into a temporary checkout. It compiles only the 64-wide noncausal forward specialization. Select one Turing GPU before launch.
+Build from the repository root with an SM75-capable CUDA compiler and the normal SDK environment. The build fetches a pinned upstream revision and its CUTLASS submodule into a temporary checkout. It compiles only the 64-wide noncausal forward specialization. Use a dedicated SDK checkout for the benchmark. On the RTX 2080, we used FP16 for the DINO and VAE encoders. Apply the included encoder adjustment once to that checkout so the candidate and control use the same encoder precision. Set CUDA_VISIBLE_DEVICES to the Turing GPU index or UUID reported by nvidia-smi.
 
 ```bash
+git apply examples/turing_attention/encoder-fp16.patch
+export ATTN_BACKEND=sdpa
 examples/turing_attention/build.sh
 PYTHONPATH=. python examples/turing_attention/sample.py --device cuda --mode synthetic \
   --image object.png --steps 50 --num_gaussians 1048576 --out native-output
