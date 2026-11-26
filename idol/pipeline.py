@@ -83,6 +83,10 @@ class IdolPipeline:
         # the T4 (sm_75), restricting SDPA to it fails, so sampling keeps the default attention backend there.
         self.cudnn_attention = self.optimize and torch.cuda.get_device_capability(self.device)[0] >= 8
         if self.optimize:
+            if layers.ATTN_BACKEND == 'sdpa' and torch.cuda.get_device_capability(self.device) in ((7, 5), (12, 0)):
+                from .models import guidance_attention  # register the opaque operator before compilation
+                for block in self.denoiser.blocks:
+                    block.attn.compact_cfg_queries = True
             compile_for_sampling(self.denoiser)
 
     @classmethod
