@@ -82,7 +82,8 @@ speed.
 
 ### Fast CUDA inference
 
-Install the `fast` extra and wrap an eager CUDA pipeline to use the fused IDOL kernels:
+The fused sampler requires an NVIDIA GPU with compute capability 8.0 or newer (Ampere or later).
+Install the `fast` extra and wrap an eager CUDA pipeline. Concurrent calls run one at a time per process.
 
 ```python
 from idol import IdolPipeline
@@ -121,8 +122,7 @@ pipeline = IdolPipeline.from_pretrained("speridlabs/idol", image_encoders={
 
 The Gradio app behind the [Hugging Face Space](https://huggingface.co/spaces/speridlabs/idol) is in `demo/`,
 with the example images. It runs on ZeroGPU there, sampling with the fast build from
-[idol-cuda](https://github.com/suvadityamuk/idol-cuda) (`demo/fast/`, Apache-2.0, about 1.8x faster than the eager
-pipeline), and on any local GPU:
+[idol-cuda](https://github.com/suvadityamuk/idol-cuda) (`idol.fast`, Apache-2.0), and on any local GPU:
 
 ```bash
 pip install -e ".[fast]"      # + the fast CUDA sampler

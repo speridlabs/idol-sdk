@@ -6,6 +6,8 @@ Then: fast sampler (fast/model.py), octree descent with a loop-free systematic r
 decoder, and the Gaussian activations + PLY columns fused in one kernel (`gaussians_ply`), written with one write.
 """
 
+from threading import Lock
+
 import numpy as np
 import torch
 from tensordict import TensorDict
@@ -81,10 +83,15 @@ class FastOutput:
 
 
 class FastIdolPipeline:
+    # Sampling sets the process-wide RNG seed and TF32 mode.
+    _inference_lock = Lock()
+
     def __init__(self, ref: IdolPipeline):
         """Run the CUDA sampler on an eager IDOL pipeline, sharing its encoders and weights."""
         if ref.optimize or torch.device(ref.device).type != 'cuda':
             raise ValueError('FastIdolPipeline requires a CUDA IdolPipeline with optimize=False')
+        if torch.cuda.get_device_capability(ref.device)[0] < 8:
+            raise ValueError('FastIdolPipeline requires CUDA compute capability 8.0 or newer')
         self.ref = ref
         self.sampler = FastDenoiser(self.ref.denoiser, attn='cudnn')
         self.K = kernel()
@@ -100,9 +107,13 @@ class FastIdolPipeline:
             assert rc['lr'][k] == 1.0, 'gaussians_ply assumes lr 1.0 except rotation'
         assert rc['num_gaussians'] == 32
 
-    @torch.no_grad()
     def __call__(self, image, mode='synthetic', seed=42, steps=50, cfg_strength=3.0, rescale_t=3.0,
                  num_gaussians=262144, timings=None):
+        with self._inference_lock:
+            return self._generate(image, mode, seed, steps, cfg_strength, rescale_t, num_gaussians, timings)
+
+    @torch.no_grad()
+    def _generate(self, image, mode, seed, steps, cfg_strength, rescale_t, num_gaussians, timings):
         ref = self.ref
 
         def mark(name):
