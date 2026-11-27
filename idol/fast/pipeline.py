@@ -15,7 +15,7 @@ from tensordict import TensorDict
 from idol import IdolPipeline
 from idol.camera import decode_camera
 
-from .model import FastDenoiser
+from .model import C, H, D, FastDenoiser
 from .ops import kernel
 
 PLY_NAMES = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity',
@@ -92,6 +92,9 @@ class FastIdolPipeline:
             raise ValueError('FastIdolPipeline requires a CUDA IdolPipeline with optimize=False')
         if torch.cuda.get_device_capability(ref.device)[0] < 8:
             raise ValueError('FastIdolPipeline requires CUDA compute capability 8.0 or newer')
+        args = ref.config['denoiser']['args']
+        if (args['model_channels'], args.get('num_heads', 16), args.get('num_head_channels', 64)) != (C, H, D):
+            raise ValueError('FastIdolPipeline requires the IDOL Standard denoiser dimensions (1024 channels, 16 heads of 64)')
         self.ref = ref
         self.sampler = FastDenoiser(self.ref.denoiser, attn='cudnn')
         self.K = kernel()
