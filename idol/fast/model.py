@@ -291,6 +291,7 @@ class FastDenoiser:
         """sample_flow with the reference's time grid (numpy float64) and Euler update."""
         import numpy as np
         self.prepare(cond)
+        cfg = max(0.0, cfg)
         z, cam = noise['latent'], noise['camera']
         t_seq = np.linspace(1, 0, steps + 1)
         t_seq = rescale_t * t_seq / (1 + (rescale_t - 1) * t_seq)

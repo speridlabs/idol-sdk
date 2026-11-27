@@ -34,6 +34,7 @@ Each pair: the input image and the generated object turning. The
 
 ```bash
 pip install -e .              # Python >= 3.10, PyTorch >= 2.5
+pip install -e ".[fast]"      # + the fast CUDA sampler
 pip install -e ".[demo]"      # + Gradio, to run the demo locally
 ```
 
@@ -79,6 +80,21 @@ Other flags:
 **Faster sampling is on by default on CUDA** The first image in a process is slower while it pytorch compiles; the rest run at full
 speed.
 
+### Fast CUDA inference
+
+The fused sampler requires an NVIDIA GPU with compute capability 8.0 or newer (Ampere or later).
+Install the `fast` extra and wrap an eager CUDA pipeline. Concurrent calls run one at a time per process.
+
+```python
+from idol import IdolPipeline
+from idol.fast import FastIdolPipeline
+
+pipeline = FastIdolPipeline(IdolPipeline.from_pretrained(device="cuda", optimize=False))
+pipeline("photo.jpg", mode="real").save_ply("model.ply")
+```
+
+For offline deployments, call `idol.fast.ops.prefetch_kernel()` when building the image to cache the pinned CUDA kernel.
+
 ### Python API
 
 ```python
@@ -106,10 +122,10 @@ pipeline = IdolPipeline.from_pretrained("speridlabs/idol", image_encoders={
 
 The Gradio app behind the [Hugging Face Space](https://huggingface.co/spaces/speridlabs/idol) is in `demo/`,
 with the example images. It runs on ZeroGPU there, sampling with the fast build from
-[idol-cuda](https://github.com/suvadityamuk/idol-cuda) (`demo/fast/`, Apache-2.0, about 1.8x faster than the eager
-pipeline), and on any local GPU:
+[idol-cuda](https://github.com/suvadityamuk/idol-cuda) (`idol.fast`, Apache-2.0), and on any local GPU:
 
 ```bash
+pip install -e ".[fast]"      # + the fast CUDA sampler
 pip install -e ".[demo]"
 cd demo && python app.py
 ```
